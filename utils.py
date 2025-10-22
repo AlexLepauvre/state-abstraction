@@ -43,9 +43,7 @@ def backward_induction(
     states,
     transition_proba,   # shape (S, A, S)
     reward,             # shape (S, A)
-    tdim: int = 5,
-    energy_dim: int = 0,
-    energy_bonus: float = 0.5
+    tdim: int = 5
 ):
     """
     Finite-horizon backward induction where time is part of the state, and the
@@ -65,13 +63,6 @@ def backward_induction(
         Immediate reward r[s, a].
     tdim : int, default -1
         Index of the time component in each state.
-    energy_dim : int, default 0
-        Index of the energy component in each state.
-    energy_bonus : float, default 0.5
-        Multiplier for terminal value if V_Tplus1 is not provided.
-    V_Tplus1 : np.ndarray, optional, shape (S,)
-        Terminal value vector used only for backups from the last decision time T.
-        If None, defaults to energy(state') * energy_bonus for every index s'.
 
     Returns
     -------
@@ -83,21 +74,15 @@ def backward_induction(
     # Extract dimensions:
     n_states = len(states)
     n_actions = reward.shape[1]
-    state_to_idx = {tuple(state): idx for idx, state in enumerate(states)}
+    state_to_idx = {state: idx for idx, state in enumerate(states)}
     # Initialize V and Q:
     V = np.zeros(n_states)
     Q = np.zeros((n_states, n_actions))
     # Extract time points:
     T = sorted(list(set([state[tdim] for state in states])))
 
-    # Adding the energy bonus:
-    for state in states:
-        if state[tdim] != T[-1]:
-            continue
-        V[state_to_idx[state]] = state[energy_dim] * energy_bonus
-
     # Loop through time steps:
-    for t in reversed(T[:-1]):
+    for t in reversed(T):
         for a in range(n_actions):
             for state in states:
                 if state[tdim] != t:
