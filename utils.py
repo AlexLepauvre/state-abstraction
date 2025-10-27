@@ -6,197 +6,229 @@ import itertools
 import numpy as np
 
 
-def evaluate_policy(states, tp, reward, policy, tdim=4):
+def bisim_metric_fast(tp, rewards, gamma=0.9, tol=1e-6, max_iters=10000):
     """
-    Compute expected return under a given policy for a finite-horizon MDP.
-    - states: list of tuples including time
-    - tp: (S,A,S)
-    - reward: (S,A)
-    - policy: 
-        if deterministic -> shape (S,) with integer actions
-        if stochastic -> shape (S,A) with probs summing to 1
-    Returns
-    -------
-    V : (S,)
-    Q : (S,A)
+    Fast Ferns-style bisimulation metric approximation.
+    Avoids Kantorovich/OT; uses expected next-state distances directly.
+
+    tp : np.ndarray, shape (nS, nA, nS)  -- transition probabilities
+    rewards : np.ndarray, shape (nS, nA)
+    gamma : float in [0,1)
     """
-    S, A, _ = tp.shape
-    V = np.zeros(S)
-    Q = np.zeros((S, A))
-    T = sorted({s[tdim] for s in states})
+    nS, nA = rewards.shape
+    d = np.zeros((nS, nS))
 
-    # backward sweep
-    for t in reversed(T):
-        idx_t = [i for i, s in enumerate(states) if s[tdim] == t]
-        for i in idx_t:
-            for a in range(A):
-                Q[i,a] = reward[i,a] + tp[i,a,:] @ V
-            # deterministic policy
-            if policy.ndim == 1:
-                V[i] = Q[i, policy[i]]
-            else:
-                V[i] = (policy[i] * Q[i]).sum()
-    return V, Q
+    for _ in range(max_iters):
+        d_old = d.copy()
+
+        for i in range(nS):
+            for j in range(i + 1, nS):
+                vals = []
+                for a in range(nA):
+                    r_diff = abs(rewards[i, a] - rewards[j, a])
+                    # expected next-state distance difference
+                    exp_diff = np.sum(np.abs(tp[i, a, :] - tp[j, a, :]) @ d)
+                    vals.append(r_diff + gamma * exp_diff)
+                d[i, j] = d[j, i] = max(vals)
+        np.fill_diagonal(d, 0.0)
+
+        if np.max(np.abs(d - d_old)) < tol:
+            break
+    return d
 
 
-def backward_induction(
-    states,
-    transition_proba,   # shape (S, A, S)
-    reward,             # shape (S, A)
-    tdim: int = 5
-):
+def avg_reduce_mdp(
+        classes: list[list[tuple[int]]],
+        tp: np.ndarray,
+        r: np.ndarray,
+        s2i: Optional[dict[tuple:int]]=None
+        ) -> tuple[list, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Finite-horizon backward induction where time is part of the state, and the
-    terminal slice is at time T+1 (no explicit states at T+1 required).
-
-    The first backup (from time T) uses a terminal value vector V_Tplus1:
-        Q[i,a] = reward[i,a] + sum_{s'} P[i,a,s'] * V_Tplus1[s']
-    Subsequent backups (t < T) use the current V as usual.
-
+    Collapse an MDP by averaging the transition probability and reward across states within a class
+    
     Parameters
     ----------
-    states : list[sequence]
-        State list; each state includes a time component at index `tdim`.
-    transition_proba : np.ndarray, shape (S, A, S)
-        Transition probabilities P[s, a, s'].
-    reward : np.ndarray, shape (S, A)
-        Immediate reward r[s, a].
-    tdim : int, default -1
-        Index of the time component in each state.
+    classes : list[list[tuple[int]]]
+        List of classes, specfying the states belonging to each class
+            [
+                [(var1, var2...),(var1,var2,...),....] -> 1st class containing N state tuples with n variables each
+            ]
+        The transition probability and reward from each class is computed by taking the average
+        tp and r of all states within the class
+    tp : (S, A, S) np.ndarray
+        Transition probability of the full MDP, based on which the tp of the reduced MDP is computed
+    r : (S, A) np.ndarray
+        Reward of the full MDP, based on which the r of the reduced MDP is computed
+    s2i : Optional[dict[tuple:int]]=None]
+        Index of each state within the tp and r matrices. In case not provided, will assume
+        that the order of the states within class match the order in tp and r when unfolded
 
     Returns
+    tuple[list, np.ndarray, np.ndarray, np.ndarray]
+        statesR : list
+            all states in reduced state space, taking the first state of each 
+            class as a representative
+        tpR : np.ndarray
+            (K, A, K) transition probability of the reduced state space
+        rR : np.ndarray
+            (K, A) reward of the reduced state space
+        class_of_state : np.ndarray
+            (S, ) Maps each state to the class it belongs to
     -------
-    V : (S,) np.ndarray
-        State values for all concrete (state-with-time) indices.
-    Q : (S, A) np.ndarray
-        State-action values.
+    
     """
-    # Extract dimensions:
-    n_states = len(states)
-    n_actions = reward.shape[1]
-    state_to_idx = {state: idx for idx, state in enumerate(states)}
-    # Initialize V and Q:
-    V = np.zeros(n_states)
-    Q = np.zeros((n_states, n_actions))
-    # Extract time points:
-    T = sorted(list(set([state[tdim] for state in states])))
-
-    # Loop through time steps:
-    for t in reversed(T):
-        for a in range(n_actions):
-            for state in states:
-                if state[tdim] != t:
-                    continue
-                Q[state_to_idx[state], a] = reward[state_to_idx[state], a] + np.dot(transition_proba[state_to_idx[state], a, :], V)
-                V[state_to_idx[state]] = np.max(Q[state_to_idx[state], :])
-    return V, Q
-
-
-def plot_dv(DV: np.ndarray, C, O, E, T, state_to_idx):
-    """
-    Plot decision values across offers and cost transitions.
-
-    Parameters
-    ----------
-    DV : np.ndarray, optional
-        Decision value array. If None, computed internally.
-    """
-
-    fig, ax = plt.subplots(len(C) * len(C) , len(O), figsize=[12, 8])
-    fig.suptitle('Decision values across offers and costs transitions', size=14)
-    for o_i, o in enumerate(O):
-        ctr = 0
-        for cc in C:
-            for fc in C:
-                mat = np.zeros([len(E), len(T[:-1])])
-                for i, e in enumerate(E):
-                    for ii, t in enumerate(T[:-1]):
-                        mat[i, ii] = DV[state_to_idx[(e, o, cc, fc, t)]] 
-                im = ax[ctr, o_i].imshow(mat, aspect='auto',
-                                         cmap='seismic', origin='lower', vmin=np.min(DV), 
-                                         vmax=np.max(DV))
-                # Plot the contours:
-                # Draw contour line where Z == 0 (boundary between + and -)
-                ax[ctr, o_i].contour(np.array(mat > 0).astype(int), levels=[0.5], 
-                                        colors='green', antialiased=False, linewidths=2)
-                if ctr == 0:
-                    ax[ctr, o_i].set_title(f'Offer = {o}', size=12)
-                if o_i == 0:
-                    ax[ctr, o_i].set_ylabel(f'cc={cc}, fc={fc} \n Energy', size=12)
-                else:
-                    ax[ctr, o_i].set_yticklabels([])
-                if ctr + 1 == len(C) * len(C):
-                    ax[ctr, o_i].set_xlabel('Trials', size=12)
-                else:
-                    ax[ctr, o_i].set_xticklabels([])
-                ctr += 1
-    plt.tight_layout()
-    cbar = fig.colorbar(im, ax=ax.ravel().tolist(),fraction=0.025, pad=0.01)
-    cbar.ax.set_ylabel('Decision value', size=16)
-    return fig, ax
-
-
-def full_state_value(classes, V_reduced=None, Q_reduced=None, S=None):
-    """
-
-    classes: list[list[int]] partition of states.
-    V_reduced: (K,), Q_reduced: (K, A). Either may be None.
-    S: optional total #states. If None, inferred from classes.
-    Returns: (V_full (S,), Q_full (S, A), class_of_state (S,))
-    """
-    if S is None:
-        S = max(i for cls in classes for i in cls) + 1
-
-    class_of_state = np.full(S, -1, dtype=int)
-    for k, idxs in enumerate(classes):
-        class_of_state[np.asarray(idxs, dtype=int)] = k
-
-    if (class_of_state == -1).any():
-        missing = np.flatnonzero(class_of_state == -1)[:10]
-        raise ValueError(f"Some states not in any class, e.g. {missing}…")
-
-    V_full = None if V_reduced is None else np.asarray(V_reduced)[class_of_state]
-    Q_full = None if Q_reduced is None else np.asarray(Q_reduced)[class_of_state, :]
-
-    return V_full, Q_full, class_of_state
-
-
-def reduce_mdp(classes, tp, reward):
-    """
-    Collapse an MDP given exact bisimulation classes.
-    classes: list[list[int]] where each inner list contains original state indices.
-    tp: (S, A, S) transition probs
-    reward: (S, A) rewards
-    Returns: (tp_reduced (K, A, K), reward_reduced (K, A), class_of_state (S,))
-    """
-    S, A, _ = tp.shape
+    # Handle inputs:
+    if s2i is None:
+        s2i = {tuple(state): idx 
+               for state, idx in enumerate(list(itertools.chain(*classes)))}
+    # Get dimensions:
+    S, A, _ = tp.shape 
     K = len(classes)
-
+    
+    # Get index of each state within each class
+    classes_ind = [[s2i[tuple(state)] 
+                    for state in class_] 
+                   for class_ in classes]
+    
     # Map each original state -> its class
     class_of_state = np.empty(S, dtype=int)
-    for k, idxs in enumerate(classes):
+    for k, idxs in enumerate(classes_ind):
         class_of_state[idxs] = k
-
+    
     # One-hot class indicator matrix M: (S, K), used to sum probs into classes
     M = np.zeros((S, K), dtype=float)
-    for k, idxs in enumerate(classes):
+    for k, idxs in enumerate(classes_ind):
         M[idxs, k] = 1.0
 
     # Average rewards within each class
-    reward_reduced = np.empty((K, A), dtype=float)
-    for k, idxs in enumerate(classes):
-        reward_reduced[k, :] = reward[idxs, :].mean(axis=0)
+    rR = np.vstack([r[idxs,:].mean(axis=0) for idxs in classes_ind])
 
     # Average transitions within each class, then pool to classes
-    tp_reduced = np.empty((K, A, K), dtype=float)
-    for k, idxs in enumerate(classes):
+    tpR = np.empty((K, A, K), dtype=float)
+    for k, idxs in enumerate(classes_ind):
         for a in range(A):
             # mean over members of class k → distribution over original S
             avg_row = tp[idxs, a, :].mean(axis=0)          # (S,)
             # pool S → K
-            tp_reduced[k, a, :] = avg_row @ M              # (K,)
+            tpR[k, a, :] = avg_row @ M              # (K,)
+    
+    # Pick the first class of each class as a representative:
+    statesR = [states[0] for states in classes]
 
-    return tp_reduced, reward_reduced, class_of_state
+    # Instantiate the new reduced MDP object:
+    return statesR, tpR, rR, class_of_state
+
+
+def reduced2full_value(
+        class_of_state : np.ndarray, 
+        V_reduced : np.ndarray, 
+        Q_reduced : np.ndarray
+        ) -> tuple[np.ndarray, np.ndarray]:
+    """
+    This function broadcasts the values of and state action values 
+    from the reduced state space back into the full state space, by
+    setting V and Q of each state to the value of its corresponding 
+    class
+
+    Parameters
+    ----------
+    class_of_state : np.ndarray
+        (S,) 1D array containing the class index corresponding to each state
+    V_reduced : np.ndarray
+        (K, ) 1D array containing the value of each class
+    Q_reduced : np.ndarray
+        (K, A) 2D array containing the state action value for each class and action
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        V_full : np.ndarray
+            (S,) 1D array, values for full state space
+        Q_full : np.ndarray
+            (S, A) 2D array, state action values for full state space
+    """
+    
+    return V_reduced[class_of_state], Q_reduced[class_of_state]
+
+
+def group_var(
+        vals: list
+        ) -> list[list]:
+    """
+    Aggregates values within a list in groups from pairs (i.e. n=2) to
+    n = len(vals) (i.e. forming a single group containing all values within a list).
+    Importantly, beyond a half split, only consider a group of all values together.
+    [1,2,3,4,5,6,7] →
+        [[ [1,2], [3,4], [5,6], [7] ],
+        [ [1,2,3], [4,5,6], [7] ],
+        [ [1,2,3,4], [5,6,7] ],
+        [ [1,2,3,4,5,6,7] ]]
+
+    Parameters
+    ----------
+    vals : list
+        List containing the sequence of values to group in increments of n to len(vals)
+
+    Returns
+    -------
+    groups : list[list]
+        List of lists containing the groups at various levels of grouping
+    """
+    n = len(vals)
+    groups = []
+    for grp_size in range(2, n + 1):
+        if grp_size > n // 2 + 1:  # beyond halfway, only take the full set
+            if not groups or groups[-1] != [vals]:
+                groups.append([vals])
+            break
+        groups.append([vals[i:i+grp_size] for i in range(0, n, grp_size)])
+    return groups
+
+
+def aggregate_states(
+        states: list[tuple[int]], 
+        dim: int
+        ) -> list[list[tuple]]:
+    """
+    Generates classes (i.e. groupings of states) by lumping variables of one dimension of 
+    the state space:
+    states = [(1, 1, 1), (1, 1, 2), (1, 1, 3), (1, 1, 4)...]
+        -> classes = [[(1, 1, 1), (1, 1, 2)], [(1, 1, 3), (1, 1, 4)]...]
+    Generates several reduced state spaces by generating groupings of all possible size for the
+    required dimension (lumping in pairs, in triplets...)
+
+    Parameters
+    ----------
+    states : list[tuple[int]]
+        List of all possible states in state space
+    dim : int
+        Dimensions along which to aggregate values
+
+    Returns
+    -------
+    list[list[list[tuple]]]
+        List of all reduced state spaces. Each reduced state space consists itself of a 
+        nested list, specfying the states belonging to each class
+            [
+                [(var1, var2...),(var1,var2,...),...] -> 1st class containing N state tuples with n variables each
+            ]
+    """
+
+    # Create the groups associated with this dimension:
+    groups = group_var(list(sorted(set([state[dim] 
+                                        for state in states]))))
+    classes = []
+    for group_i, group in enumerate(groups):
+        classes.append([])
+        # Loop through each state:
+        for state in states:
+            # Loop through each group
+            for g in group:
+                if state[dim] == g[0]:
+                    classes[group_i].append([tuple(list(state[:dim]) + [v] + list(state[dim+1:])) for v in g]) 
+                    break
+
+    return classes
 
 
 def bisimulation_classes(
