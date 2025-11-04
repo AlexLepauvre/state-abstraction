@@ -2,39 +2,289 @@ import numpy as np
 import matplotlib.pyplot as plt
 from typing import Optional, Sequence, Tuple
 import itertools
-
+from tqdm import tqdm
 import numpy as np
+from ot import emd2
+from joblib import Parallel, delayed
+import time
 
 
-def bisim_metric_fast(tp, rewards, gamma=0.9, tol=1e-6, max_iters=10000):
+def state_pairs_dist_shared(
+        s1: int, 
+        s2: int, 
+        s1_tp: np.ndarray, 
+        s2_tp: np.ndarray,
+        r_diff: np.ndarray, 
+        m: np.ndarray, 
+        cT: float, 
+        cR: float
+        ) -> tuple[float, int, int]:
+    
+    # Get actions:
+    A = r_diff.shape[0]
+    vals = []
+    # Loop over actions:
+    for a in range(A):
+        # match min length; uniform ⇒ simple average
+        k = min(s1_tp[a].size, s2_tp[a].size)
+        # Sort the variables:
+        Iis = np.sort(s1_tp[a])[:k]
+        Jjs = np.sort(s2_tp[a])[:k]
+        # Compute average distance across all next possible states:
+        future = m[Iis, Jjs].mean()
+        # Append distance
+        vals.append(cR * r_diff[a] + cT * future)
+    
+    return max(vals), s1, s2
+
+
+def bisim_metric_shared(
+    tp: np.ndarray,            # (S, A, S) transition probabilities
+    rewards: np.ndarray,       # (S, A)
+    gamma: float = 0.9,
+    tol: float = 1e-6,
+    max_iters: int = 200,
+    njobs=-1
+) -> np.ndarray:
     """
-    Fast Ferns-style bisimulation metric approximation.
-    Avoids Kantorovich/OT; uses expected next-state distances directly.
+    Computes Ferns bisimilarity metric in the specific case where the source of stochasticity is
+    shared between states. This is applicable in the case where some variables of the MDP are 
+    deterministic, while the stochastic part is taken from the same probability distribution
+    across all states (i.e. state independent stochasticity). In this case, linear programming
+    can be sidetstep in favor of computing an average under shared randomness. 
 
-    tp : np.ndarray, shape (nS, nA, nS)  -- transition probabilities
-    rewards : np.ndarray, shape (nS, nA)
-    gamma : float in [0,1)
+
+    Parameters
+    ----------
+    tp : np.ndarray
+        (S, A, S) transition probabilities
+    rewards : np.ndarray
+        (S, A) reward
+    gamma : float, optional
+        Discount factor of the MDP
+    tol : float, optional
+        precision tolerance of the distance estimation
+    max_iters : int, optional
+        _description_, by default 200
+    
+
+    Returns
+    -------
+    np.ndarray
+        (S, S) state by state distance matrix
+
+    Raises
+    ------
+    ValueError
+        _description_
+    ValueError
+        _description_
     """
-    nS, nA = rewards.shape
-    d = np.zeros((nS, nS))
+    # Enforce tp and rewards to numpy arrays:
+    tp = np.asarray(tp, dtype=np.float64)
+    rewards = np.asarray(rewards, dtype=np.float64)
+    
+    # Get shapes:
+    S, A, S2 = tp.shape
+    if S2 != S or rewards.shape != (S, A):
+        raise ValueError("tp must be (S,A,S) and rewards must be (S,A)")
 
-    for _ in range(max_iters):
-        d_old = d.copy()
+    # Reward and tp costs constant:
+    cR, cT = (1.0 - gamma), gamma
 
-        for i in range(nS):
-            for j in range(i + 1, nS):
-                vals = []
-                for a in range(nA):
-                    r_diff = abs(rewards[i, a] - rewards[j, a])
-                    # expected next-state distance difference
-                    exp_diff = np.sum(np.abs(tp[i, a, :] - tp[j, a, :]) @ d)
-                    vals.append(r_diff + gamma * exp_diff)
-                d[i, j] = d[j, i] = max(vals)
-        np.fill_diagonal(d, 0.0)
+    # Precompute state pairs of only the upper triangle as the matrix is symetric:
+    pairs = [(i, j) for i in range(S) for j in range(i+1, S)]
 
-        if np.max(np.abs(d - d_old)) < tol:
+    # Calculate absolute difference in reward:
+    dr = np.zeros((S, S, A))
+    for s1, s2 in pairs:
+        for a in range(A):
+            dr[s1, s2, a] = abs(rewards[s1, a] - rewards[s2, a])
+
+    # Make terminals absorbing if needed
+    tp_clean = tp.copy()
+    for s in range(S):
+        for a in range(A):
+            row = tp_clean[s, a, :]
+            total = row.sum()
+            if total <= 0:
+                row[:] = 0.0
+                row[s] = 1.0
+            elif not np.isclose(total, 1.0, atol=1e-12):
+                raise ValueError("tp rows must sum to 1!")
+
+    # Init distance matrix with rewards absolute difference
+    m = np.zeros((S, S), dtype=np.float64)
+    for i in range(S):
+        for j in range(i + 1, S):
+            best = 0.0
+            for a in range(A):
+                da = abs(rewards[i, a] - rewards[j, a])
+                best = max(best, cR * da)
+            m[i, j] = best
+    m = np.maximum(m, m.T)  # symmetrize; diag already 0
+
+    # Extract future possible state for each state and action:
+    non_zeros_tp = [[np.flatnonzero(tp_clean[s, a, :] > 0) for a in range(A)] for s in range(S)]
+
+    # Fixed-point iteration with shared randomness
+    for _ in tqdm(range(max_iters)):
+        m_old = m
+        m_next = m.copy()
+        results = Parallel(n_jobs=njobs)(
+                delayed(state_pairs_dist_shared)(s1, s2, non_zeros_tp[s1], non_zeros_tp[s2], dr[s1, s2, :], m_old, cT, cR) for (s1, s2) in pairs
+            )
+        # Convert to square matrix:
+        for dst, s1, s2 in results:
+            m_next[s1, s2] = dst
+        # Symetrize and set diag to 0:
+        m_next = np.maximum(m_next, m_next.T)
+        np.fill_diagonal(m_next, 0.0)
+        # Check if within tolerance bounds:
+        if np.max(np.abs(m_next - m_old)) < tol:
+            m = m_next
             break
-    return d
+        m = m_next
+
+    return m
+
+
+def state_pairs_dist(
+        s1: int, 
+        s2: int, 
+        non_zero_tp, 
+        next_states_ind,
+        r_diff: np.ndarray, 
+        m: np.ndarray, 
+        cT: float, 
+        cR: float
+        ) -> tuple[float, int, int]:
+    
+    # Get actions:
+    A = r_diff.shape[0]
+    vals = []
+    # Loop over actions:
+    for a in range(A):
+        # Append distance
+        vals.append(cR * r_diff[a] + cT * emd2(non_zero_tp[s1][a], 
+                                               non_zero_tp[s2][a], 
+                                               m[np.ix_(next_states_ind[s1][a], 
+                                                        next_states_ind[s2][a])]))
+    
+    return max(vals), s1, s2
+
+
+def bisim_metric(
+    tp: np.ndarray,            # (S, A, S) transition probabilities
+    rewards: np.ndarray,       # (S, A)
+    gamma: float = 0.9,
+    tol: float = 1e-6,
+    max_iters: int = 200,
+    njobs=-1
+) -> np.ndarray:
+    """
+    Computes Ferns bisimilarity metric in the specific case where the source of stochasticity is
+    shared between states. This is applicable in the case where some variables of the MDP are 
+    deterministic, while the stochastic part is taken from the same probability distribution
+    across all states (i.e. state independent stochasticity). In this case, linear programming
+    can be sidetstep in favor of computing an average under shared randomness. 
+
+
+    Parameters
+    ----------
+    tp : np.ndarray
+        (S, A, S) transition probabilities
+    rewards : np.ndarray
+        (S, A) reward
+    gamma : float, optional
+        Discount factor of the MDP
+    tol : float, optional
+        precision tolerance of the distance estimation
+    max_iters : int, optional
+        _description_, by default 200
+    
+
+    Returns
+    -------
+    np.ndarray
+        (S, S) state by state distance matrix
+
+    Raises
+    ------
+    ValueError
+        _description_
+    ValueError
+        _description_
+    """
+    # Enforce tp and rewards to numpy arrays:
+    tp = np.asarray(tp, dtype=np.float64)
+    rewards = np.asarray(rewards, dtype=np.float64)
+    
+    # Get shapes:
+    S, A, S2 = tp.shape
+    if S2 != S or rewards.shape != (S, A):
+        raise ValueError("tp must be (S,A,S) and rewards must be (S,A)")
+
+    # Reward and tp costs constant:
+    cR, cT = (1.0 - gamma), gamma
+
+    # Precompute state pairs of only the upper triangle as the matrix is symetric:
+    pairs = [(i, j) for i in range(S) for j in range(i+1, S)]
+
+    # Calculate absolute difference in reward:
+    dr = np.zeros((S, S, A))
+    for s1, s2 in pairs:
+        for a in range(A):
+            dr[s1, s2, a] = abs(rewards[s1, a] - rewards[s2, a])
+
+    # Make terminals absorbing if needed
+    tp_clean = tp.copy()
+    for s in range(S):
+        for a in range(A):
+            row = tp_clean[s, a, :]
+            total = row.sum()
+            if total <= 0:
+                row[:] = 0.0
+                row[s] = 1.0
+            elif not np.isclose(total, 1.0, atol=1e-12):
+                raise ValueError("tp rows must sum to 1!")
+
+    # Init distance matrix with rewards absolute difference
+    m = np.zeros((S, S), dtype=np.float64)
+    for i in range(S):
+        for j in range(i + 1, S):
+            best = 0.0
+            for a in range(A):
+                da = abs(rewards[i, a] - rewards[j, a])
+                best = max(best, cR * da)
+            m[i, j] = best
+    m = np.maximum(m, m.T)  # symmetrize; diag already 0
+
+    # Extract future possible state for each state and action:
+    next_states_ind = [[np.flatnonzero(tp_clean[s, a, :] > 0) for a in range(A)] for s in range(S)]
+    non_zero_tp = [[tp_clean[s, a, next_states_ind[s][a]] for a in range(A)] for s in range(S)]
+
+    # Fixed-point iteration with shared randomness
+    for _ in tqdm(range(max_iters)):
+        m_old = m
+        m_next = m.copy()
+        results = Parallel(n_jobs=njobs)(
+                delayed(state_pairs_dist)(s1, s2, non_zero_tp, next_states_ind, dr[s1, s2, :], m_old, cT, cR) 
+                                                 for (s1, s2) in pairs
+            )
+        # Convert to square matrix:
+        for dst, s1, s2 in results:
+            m_next[s1, s2] = dst
+        # Symetrize and set diag to 0:
+        m_next = np.maximum(m_next, m_next.T)
+        np.fill_diagonal(m_next, 0.0)
+        # Check if within tolerance bounds:
+        if np.max(np.abs(m_next - m_old)) < tol:
+            m = m_next
+            break
+        m = m_next
+
+    return m
 
 
 def avg_reduce_mdp(
@@ -80,7 +330,7 @@ def avg_reduce_mdp(
     # Handle inputs:
     if s2i is None:
         s2i = {tuple(state): idx 
-               for state, idx in enumerate(list(itertools.chain(*classes)))}
+               for idx, state  in enumerate(list(itertools.chain(*classes)))}
     # Get dimensions:
     S, A, _ = tp.shape 
     K = len(classes)
@@ -150,6 +400,31 @@ def reduced2full_value(
     
     return V_reduced[class_of_state], Q_reduced[class_of_state]
 
+
+def state_classes_from_lbl(
+        states: list[tuple], 
+        class_of_states: np.ndarray
+        ) -> list[list[tuple]]: 
+    """
+    Create classes from labels associating each label to its class
+
+    Parameters
+    ----------
+    states : list[tuple]
+        _description_
+    class_of_states : np.ndarray
+        _description_
+
+    Returns
+    -------
+    list[list[tuple]]
+        _description_
+    """
+    # Prepare state classes:
+    state_classes = [[] for _ in range(len(np.unique(class_of_states)))]
+    for state_i, state in enumerate(states):
+        state_classes[class_of_states[state_i]].append(state)
+    return state_classes
 
 def group_var(
         vals: list
@@ -417,8 +692,8 @@ def plot_state_matrix(
     # =================== Draw boundaries ==================
     for i, bounds in enumerate(boundaries_all):
         for b in bounds:
-            ax.axhline(b, color='white', lw=0.1 + 0.25*(depth - i), alpha=0.5)
-            ax.axvline(b, color='white', lw=0.1 + 0.25*(depth - i), alpha=0.5)
+            ax.axhline(b, color='white', lw=0.05 + 0.1*(depth - i), alpha=0.5)
+            ax.axvline(b, color='white', lw=0.05 + 0.1*(depth - i), alpha=0.5)
 
     def subsample(centers, labels):
         if len(centers) <= max_labels_per_tier: return centers, labels
