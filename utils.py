@@ -1,12 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 from typing import Optional, Sequence, Tuple
 import itertools
 from tqdm import tqdm
 import numpy as np
 from ot import emd2
 from joblib import Parallel, delayed
-import time
 
 
 def state_pairs_dist_shared(
@@ -150,28 +150,27 @@ def bisim_metric_shared(
 
 
 def state_pairs_dist(
-        s1: int, 
-        s2: int, 
-        non_zero_tp, 
-        next_states_ind,
+        A,
+        pair_tp, 
+        c,
         r_diff: np.ndarray, 
-        m: np.ndarray, 
         cT: float, 
         cR: float
         ) -> tuple[float, int, int]:
     
     # Get actions:
-    A = r_diff.shape[0]
-    vals = []
+    best = 0
     # Loop over actions:
     for a in range(A):
-        # Append distance
-        vals.append(cR * r_diff[a] + cT * emd2(non_zero_tp[s1][a], 
-                                               non_zero_tp[s2][a], 
-                                               m[np.ix_(next_states_ind[s1][a], 
-                                                        next_states_ind[s2][a])]))
+        # Compute distance
+        val = cR * r_diff[a] + cT * emd2(pair_tp[0][a], 
+                                         pair_tp[1][a], 
+                                         c[a])
+        # Actualize best value:
+        if val > best:
+            best = val
     
-    return max(vals), s1, s2
+    return best
 
 
 def bisim_metric(
@@ -260,30 +259,46 @@ def bisim_metric(
             m[i, j] = best
     m = np.maximum(m, m.T)  # symmetrize; diag already 0
 
-    # Extract future possible state for each state and action:
+    # For each state, extract index of next possible states (tp>0) and their associated tp
     next_states_ind = [[np.flatnonzero(tp_clean[s, a, :] > 0) for a in range(A)] for s in range(S)]
     non_zero_tp = [[tp_clean[s, a, next_states_ind[s][a]] for a in range(A)] for s in range(S)]
 
+    # Store non-zero tp of each pairs and action in a list
+    states_pairs_tp = []
+    for s1, s2 in pairs:
+        states_pairs_tp.append([[non_zero_tp[s1][a] for a in range(A)], 
+                                [non_zero_tp[s2][a] for a in range(A)]])
+
     # Fixed-point iteration with shared randomness
     for _ in tqdm(range(max_iters)):
-        m_old = m
-        m_next = m.copy()
-        results = Parallel(n_jobs=njobs)(
-                delayed(state_pairs_dist)(s1, s2, non_zero_tp, next_states_ind, dr[s1, s2, :], m_old, cT, cR) 
-                                                 for (s1, s2) in pairs
+        m_old = m.copy()
+        # Create list of costs mapping to each pair the 
+        # cost matrix associated with each action
+        costs_list = [
+            [m[np.ix_(next_states_ind[s1][a], next_states_ind[s2][a])] for a in range(A)]
+            for (s1, s2) in pairs
+        ]
+        # Compute distance for each pair:
+        pairs_dist = Parallel(n_jobs=njobs)(
+                delayed(state_pairs_dist)(A, 
+                                          states_pairs_tp[i], 
+                                          costs_list[i], 
+                                          dr[s1, s2, :], 
+                                          cT, cR) 
+                                          for i, (s1, s2) in enumerate(pairs)
             )
-        # Convert to square matrix:
-        for dst, s1, s2 in results:
-            m_next[s1, s2] = dst
-        # Symetrize and set diag to 0:
-        m_next = np.maximum(m_next, m_next.T)
-        np.fill_diagonal(m_next, 0.0)
+        # Replace distance with newest values:
+        for i, (s1, s2) in enumerate(pairs):
+            m[s1, s2] = pairs_dist[i]
         # Check if within tolerance bounds:
-        if np.max(np.abs(m_next - m_old)) < tol:
-            m = m_next
+        if np.max(np.abs(m - m_old)) < tol:
+            # Symetrize and set diag to 0:
+            m = np.maximum(m, m.T)
+            np.fill_diagonal(m, 0.0)
             break
-        m = m_next
-
+    # Symetrize and set diag to 0:
+    m = np.maximum(m, m.T)
+    np.fill_diagonal(m, 0.0)
     return m
 
 
@@ -735,3 +750,52 @@ def plot_state_matrix(
     cax = fig.add_subplot(gs[0, depth+1])
     fig.colorbar(im, cax=cax, label=cbar_label)
     return fig
+
+
+
+
+def draw_sign_boundary(ax, mat: np.ndarray, thresh: float = 0, color: str = 'green', linewidth: float = 2.0) -> None:
+    """
+    Draw a crisp boundary along cell edges separating positive and negative
+    values in a 2D matrix, aligned exactly with the grid (no interpolation).
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axis on which to draw.
+    mat : np.ndarray
+        2D array of values (e.g., decision values).
+    color : str, default 'green'
+        Color of the contour line.
+    linewidth : float, default 2.0
+        Line width of the contour.
+    """
+    pos = mat > thresh
+    rows, cols = mat.shape
+
+    # Horizontal edges: sign changes between vertical neighbors
+    h_edges = pos[1:, :] ^ pos[:-1, :]
+    # Vertical edges: sign changes between horizontal neighbors
+    v_edges = pos[:, 1:] ^ pos[:, :-1]
+
+    segs = []
+
+    # Vertical boundary segments (between adjacent columns)
+    iy, ix = np.where(v_edges)
+    for i, j in zip(iy, ix):
+        x = j + 0.5
+        segs.append([(x, i - 0.5), (x, i + 0.5)])
+
+    # Horizontal boundary segments (between adjacent rows)
+    iy, ix = np.where(h_edges)
+    for i, j in zip(iy, ix):
+        y = i + 0.5
+        segs.append([(j - 0.5, y), (j + 0.5, y)])
+
+    # Add line collection to axis
+    lc = LineCollection(segs, colors=color, linewidths=linewidth, capstyle='butt')
+    ax.add_collection(lc)
+
+    # Keep axis limits aligned with pixel edges
+    ax.set_xlim(-0.5, cols - 0.5)
+    ax.set_ylim(-0.5, rows - 0.5)

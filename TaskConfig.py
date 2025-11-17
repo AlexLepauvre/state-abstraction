@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import numpy as np
+import pandas as pd
 import itertools
 
 
@@ -33,13 +34,13 @@ class LimitedEnergyTask:
     """
     # Structure of the task:
     n_trials_per_segment: int = 4
-    tmax: int = 9
+    tmax: int = 12
     
     # Energy
     initial_energy: int = 3
     max_energy: int = 6
+    energy_bonus: float = 0
     min_energy = 0
-    energy_bonus = 0.5
 
     # Costs
     C: list[int] = field(default_factory=lambda: [1, 2])
@@ -78,7 +79,7 @@ class LimitedEnergyTask:
             Index of the time and energy dimensions in the state tuples
         """
         # Create time axis:
-        self.T = list(range(1, self.tmax+1))
+        self.T = list(range(1, self.tmax+2))
         self.states = list(itertools.product(self.E, self.O, self.C, self.C, self.T))  # All possible states in state space
         self.s2i = {s:i for i,s in enumerate(self.states)}
         i2s = {i:s for i,s in enumerate(self.states)}
@@ -94,52 +95,112 @@ class LimitedEnergyTask:
                 # Extract the variables from the current state:
                 e, o, cc, fc, t = state
                 i = self.s2i[state]
-                # In the terminal state, the immediate reward is a function of the energy:
-                if t == self.T[-1]:
-                    self.r[i, a] = e * self.energy_bonus
-                
-                # Transitional probability in terminal state is 0, so continue
-                if t == self.T[-1]:
+                # Special handling of the last trial:
+                # Terminal slice: t = T+1
+                if t == self.tmax + 1:
+                    # No transitions: tp[i, a, :] stays all zeros
+                    # Terminal reward equals energy_bonus * remaining energy
+                    self.r[i, a] = self.energy_bonus * e
                     continue
-                
-                # Determine the next states variables values:
-                # Current and future cost stay fixed, next t is always t+1:
-                cc2 = cc  
-                fc2 = fc
-                t2 = t+1
-
-                # The next energy is a function of action, current energy level and costs (which depends on t)
-                if t <= self.n_trials_per_segment:  # Within the first segment, the cost cc applies
-                    cost = cc
-                else:
-                    cost = fc
-
-                # Reward is equal to the offer if the agent accepts and can afford it
-                if a == 1 and e >= cost:
-                    self.r[i, a] = o
-
-                # If enough energy to accept reward and accept reward, loose energy
-                if a == 1 and e >= cost: 
-                    e2 = e-cost
-                elif a == 1 and e < cost:  # If not enough energy but accept nonetheless, set energy to 0
-                    e2 = 0
-                else:  # If participants reject, increase energy by 1 up to max energy
-                    e2 = min(e+1, self.max_energy)
-
-                # Finally, offer in the next trials are stochastic:
-                # Handling the specific case of trials beyond the horizon:
-                if t >= self.n_trials_per_segment * 2:
-                    # If we are beyond the segment pairs, cc and fc are unknown and are 
-                    # equally likely to take any values
-                    for cc2, fc2 in list(itertools.product(self.C, self.C)):
-                        for o2, p in zip(self.O, self.p_offer):
-                            # The probability is the probability of each offer times 
-                            # the probability of each possible costs:
-                            j = self.s2i[(e2, o2, cc2, fc2, t2)]
-                            self.tp[i, a, j] = p * 1/len(self.C)**2
-                else:
-                    # The next trial can have any of the possible offers depending on their probability:
+                # First segment:
+                if t <= self.n_trials_per_segment:
                     for o2, p in zip(self.O, self.p_offer):
-                        j = self.s2i[(e2, o2, cc2, fc2, t2)]
-                        self.tp[i, a, j] = p
+                        if a == 1 and e >= cc:
+                            j = self.s2i[(e-cc, o2, cc, fc, t+1)]
+                            self.tp[i, a, j] = p
+                            self.r[i, a] = o
+                        elif a == 1 and e < cc:
+                            j = self.s2i[(0, o2, cc, fc, t+1)]
+                            self.tp[i, a, j] = p
+                            self.r[i, a] = 0
+                        else:
+                            j = self.s2i[(min(e+1, self.max_energy), o2, cc, fc, t+1)]
+                            self.tp[i, a, j] = p
+                            self.r[i, a] = 0
+                # Second segment:
+                elif self.n_trials_per_segment < t <= self.n_trials_per_segment * 2:
+                    for o2, p in zip(self.O, self.p_offer):
+                        if a == 1 and e >= fc:
+                            j = self.s2i[(e-fc, o2, cc, fc, t+1)]
+                            self.tp[i, a, j] = p
+                            self.r[i, a] = o
+                        elif a == 1 and e < fc:
+                            j = self.s2i[(0, o2, cc, fc, t+1)]
+                            self.tp[i, a, j] = p
+                            self.r[i, a] = 0
+                        else:
+                            j = self.s2i[(min(e+1, self.max_energy), o2, cc, fc, t+1)]
+                            self.tp[i, a, j] = p
+                            self.r[i, a] = 0
+                # Third segment:
+                else:
+                    r = []
+                    for o2, p in zip(self.O, self.p_offer):
+                        for ffc in self.C:
+                            if a == 1 and e >= ffc:
+                                j = self.s2i[(e-ffc, o2, cc, fc, t+1)]
+                                self.tp[i, a, j] += p * 1/len(self.C)
+                                r.append(np.mean(self.O))
+                            elif a == 1 and e < ffc:
+                                j = self.s2i[(0, o2, cc, fc, t+1)]
+                                self.tp[i, a, j] += p * 1/len(self.C)
+                                r.append(0)
+                            else:
+                                j = self.s2i[(min(e+1, self.max_energy), o2, cc, fc, t+1)]
+                                self.tp[i, a, j] += p  * 1/len(self.C)
+                                r.append(0)
+                    self.r[i, a] = np.mean(r)
+
+    def design_matrix(self, 
+                      n_trials: int, 
+                      n_subjects: int
+                      ) -> list[pd.DataFrame]:
+        """
+        Generates the design matrices of each subjects, with n trials each 
+
+        Parameters
+        ----------
+        n_trials : int
+            Number of trials per subjects
+        n_subjects : int
+            Number of subjects
+
+        Returns
+        -------
+        list[pd.DataFrame]
+            List of pandas dataframe containing the design for each subject
+        """
+        # Recursively call function if more than 1 subject:
+        if n_subjects > 1:
+            subjects_design = []
+            for _ in range(n_subjects):
+                subjects_design.append(self.design_matrix(n_trials, 1))
+            return subjects_design
+        
+        # Calculate the number of segments:
+        if n_trials%self.n_trials_per_segment > 0:
+            print("Warning, the number of trials doesn't of trials doesn't fall round with the number of trials per segment" \
+                  "We'll round up!")
+        if np.ceil(n_trials/self.n_trials_per_segment)%2 > 0:
+            print("Warning, the number of trials does not allow for a paired number of segments." \
+                  "We'll round up!")
+            n_trials += self.n_trials_per_segment
+
+        # Calculate the number of segments: 
+        n_segments = np.ceil(n_trials/self.n_trials_per_segment)
+        # Prepare the possible costs combinations:
+        costs_combi = list(itertools.product(self.C, repeat=2))
+        design_mat = pd.DataFrame()
+        # Loop through each segment
+        for seg_pair in range(int(n_segments/2)):
+            # Randomly pick one possible cost pair:
+            cc, fc = costs_combi[np.random.choice(len(costs_combi), 1)[0]]
+            design_mat = pd.concat([design_mat, pd.DataFrame({
+                'segment': [seg_pair * 2] * 4 + [seg_pair * 2 + 1] * 4,
+                'trial_within_seg': [1, 2, 3, 4] * 2,
+                'offer': np.random.choice(self.O, self.n_trials_per_segment * 2),
+                'costs': [cc] * 4 + [fc] * 4
+            })], ignore_index=True)
+        
+        return design_mat    
     

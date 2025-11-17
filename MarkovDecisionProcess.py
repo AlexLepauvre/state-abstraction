@@ -2,6 +2,8 @@ import numpy as np
 from typing import Optional
 import matplotlib.pyplot as plt
 import matplotlib
+from utils import draw_sign_boundary
+
 
 class MDP:
     """
@@ -182,7 +184,8 @@ class MDP:
     def plot_dv(
             self, 
             DV: np.ndarray,
-            title: Optional[str]=None
+            title: Optional[str]=None,
+            tmax: Optional[float]=None,
             ) -> tuple[matplotlib.figure.Figure, plt.Axes]:
         """
         Plot the decision values as a function of energy and 
@@ -200,30 +203,32 @@ class MDP:
         tuple[matplotlib.figure.Figure, plt.Axes]
             fig and ax
         """
-        # Extract the state variables:
+        # Extract the state variables: 
         states_var = [sorted(list(set([state[i] 
                                        for state in self.states])))
                                        for i in range(len(self.states[0]))]
         fig, ax = plt.subplots(len(states_var[2]) ** 2, 
                                len(states_var[1]), 
                                figsize=[12, 8])
+        if tmax is None:
+            tmax = self.T[-1]
         if title is not None:
             fig.suptitle(title, size=14)
         for o_i, o in enumerate(states_var[1]):
             ctr = 0
             for cc in states_var[2]:
                 for fc in states_var[3]:
-                    mat = np.zeros([len(states_var[self.edim]), len(self.T[:-1])])
+                    mat = np.zeros([len(states_var[self.edim]), tmax])
                     for i, e in enumerate(states_var[self.edim]):
-                        for ii, t in enumerate(self.T[:-1]):
-                            mat[i, ii] = DV[self.s2i[(e, o, cc, fc, t)]] 
+                        for ii, t in enumerate(range(tmax)):
+                            mat[i, ii] = DV[self.s2i[(e, o, cc, fc, t+1)]] 
+                    
                     im = ax[ctr, o_i].imshow(mat, aspect='auto',
-                                            cmap='seismic', origin='lower', vmin=np.min(DV), 
-                                            vmax=np.max(DV))
+                                            cmap='seismic', origin='lower', vmin=-(np.max(np.abs(DV))), 
+                                            vmax=np.max(np.abs(DV)))
                     # Plot the contours:
                     # Draw contour line where Z == 0 (boundary between + and -)
-                    ax[ctr, o_i].contour(np.array(mat > 0).astype(int), levels=[0.5], 
-                                            colors='green', antialiased=False, linewidths=2)
+                    draw_sign_boundary(ax[ctr, o_i], mat, thresh=0)
                     if ctr == 0:
                         ax[ctr, o_i].set_title(f'Offer = {o}', size=12)
                     if o_i == 0:
