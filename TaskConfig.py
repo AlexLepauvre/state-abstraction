@@ -1,7 +1,9 @@
 from dataclasses import dataclass, field
+from scipy.special import expit
 import numpy as np
 import pandas as pd
 import itertools
+from typing import Optional
 
 
 @dataclass

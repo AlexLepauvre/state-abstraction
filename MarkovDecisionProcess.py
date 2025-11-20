@@ -211,7 +211,7 @@ class MDP:
                                len(states_var[1]), 
                                figsize=[12, 8])
         if tmax is None:
-            tmax = self.T[-1]
+            tmax = self.T[-2]
         if title is not None:
             fig.suptitle(title, size=14)
         for o_i, o in enumerate(states_var[1]):
