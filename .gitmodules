@@ -1,0 +1,4 @@
+[submodule "data"]
+	path = data
+	url = ./data
+	datalad-id = 68c6532d-7b89-48f0-9109-2f4c55a467b5
