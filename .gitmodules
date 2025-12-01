@@ -2,3 +2,7 @@
 	path = data/bids
 	url = ./data/bids
 	datalad-id = 45033665-d857-4343-8067-2a1889440374
+[submodule "data/raw_data"]
+	path = data/raw_data
+	url = ./data/raw_data
+	datalad-id = eec25371-553c-4985-ad83-0a2cfdceaaf7
