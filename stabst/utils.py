@@ -718,6 +718,7 @@ def compact_class_repr(states, dim_names):
 def summarize_state_classes(
     state_classes,
     eps,
+    decision_values,
     dim_names=("energy", "offer", "current_cost", "future_cost", "time"),
     max_classes=10,
     bar_width=20,
@@ -832,6 +833,7 @@ def summarize_state_classes(
                       if v >= loose_threshold]
 
         print(f"Class #{rank} (original index {idx})")
+        print(f"  Decision value: {decision_values[idx]}")
         print(f"  #states: {n}")
         if tight_dims:
             print(f"  Tight dims (≈constant): {', '.join(tight_dims)}")
