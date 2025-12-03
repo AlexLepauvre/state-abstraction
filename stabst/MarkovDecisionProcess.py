@@ -417,7 +417,7 @@ class MDP:
 
             # Compute distance for each pair:
             pairs_dist = Parallel(n_jobs=njobs)(
-                    delayed(self.state_pairs_dist)(A, 
+                    delayed(self.state_pairs_dist)(
                                             states_pairs_tp[i], 
                                             costs_list[i], 
                                             dr[s1, s2, :], 
