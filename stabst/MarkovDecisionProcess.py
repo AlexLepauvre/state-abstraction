@@ -317,7 +317,8 @@ class MDP:
 
     def bisim_metric(
             self,
-            gamma: float = 0.9,
+            cR: float = 0.1,
+            cT: float = 0.9,
             tol: float = 1e-6,
             max_iters: int = 200,
             njobs=-1
@@ -354,16 +355,15 @@ class MDP:
         ValueError
             _description_
         """
-        if not 0 < gamma < 1:
-            raise ValueError("Gamma must be larger than 0 but smaller than 1!")
+        if not 0 <= cR <= 1:
+            raise ValueError("cR must be larger than 0 but smaller than 1!")
+        if not 0 <= cT <= 1:
+            raise ValueError("cT must be larger than 0 but smaller than 1!")
         
         # Get shapes:
         S, A, S2 = self.tp.shape
         if S2 != S or self.r.shape != (S, A):
             raise ValueError("tp must be (S,A,S) and rewards must be (S,A)")
-
-        # Reward and tp costs constant:
-        cR, cT = (1.0 - gamma), gamma
 
         # Precompute state pairs of only the upper triangle as the matrix is symetric:
         pairs = [(i, j) for i in range(S) for j in range(i+1, S)]
