@@ -19,6 +19,7 @@ class MDP:
                  states: list[tuple], 
                  tp: np.ndarray, 
                  r: np.ndarray, 
+                 gamma: float,
                  *, 
                  s2i: dict[tuple: int]=None,
                  tdim: Optional[int]=4, 
@@ -51,7 +52,7 @@ class MDP:
         assert r.shape[0] == len(states), (f"r matrix does not match the number of states: "
                                            f"{len(states)} states but r.shape[0]={r.shape[0]}")
         # Set task config:
-        self.states, self.tp, self.r = states, tp, r
+        self.states, self.tp, self.r, self.gamma = states, tp, r, gamma
         # Set indices:
         self.s2i = {state: idx for idx, state in enumerate(self.states)} if s2i is None else s2i # Index of each state
         # Set dimension indices:
@@ -100,7 +101,7 @@ class MDP:
                 for state in self.states:
                     if state[self.tdim] != t:
                         continue
-                    Q[self.s2i[state], a] = self.r[self.s2i[state], a] + np.dot(self.tp[self.s2i[state], a, :], V)
+                    Q[self.s2i[state], a] = self.r[self.s2i[state], a] + self.gamma * np.dot(self.tp[self.s2i[state], a, :], V)
                     V[self.s2i[state]] = np.max(Q[self.s2i[state], :])
         return V, Q
 
@@ -497,5 +498,5 @@ class MDP:
         # Reduce the MDP accordingly:
         statesR, tpR, rR, class_of_state = avg_reduce_mdp(state_classes, self.tp, self.r, self.s2i)
         # Return MDP object:
-        return MDP(statesR, tpR, rR), state_classes, class_of_state
+        return MDP(statesR, tpR, rR, self.gamma), state_classes, class_of_state
     
