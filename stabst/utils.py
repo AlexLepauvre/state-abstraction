@@ -1,13 +1,12 @@
+from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from typing import Optional, Sequence, Tuple
 import itertools
-from tqdm import tqdm
-from ot import emd2
-from joblib import Parallel, delayed
 import itertools
 import numpy as np
+
 
 
 def avg_reduce_mdp(
@@ -709,7 +708,7 @@ def compact_class_repr(states, dim_names):
             if len(vals) == 1:
                 dims_repr.append(f"{dim_names[i]}: {str(vals[0])}")
             else:
-                dims_repr.append(f"{dim_names[i]}: [{",".join(map(str, vals))}]")
+                dims_repr.append(f"{dim_names[i]}: [{','.join(map(str, vals))}]")
         parts.append("{" + ", ".join(dims_repr) + "}")
     return "\n ∪ \n".join(parts)
 
@@ -845,3 +844,298 @@ def summarize_state_classes(
         print(compact_class_repr(cls, dim_names))
         print("-" * 80)
 
+
+
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+
+
+State = Tuple[Any, Any, Any, Any, int]  # (e, o, cc, fc, t) where t is 1-based
+
+
+def _build_state_to_class_map(state_classes: Sequence[Sequence[State]]) -> Dict[State, int]:
+    st2c: Dict[State, int] = {}
+    for cid, cls in enumerate(state_classes):
+        for s in cls:
+            st2c[s] = cid
+    return st2c
+
+
+def _axes_index_map(ax: np.ndarray) -> Dict[matplotlib.axes.Axes, Tuple[int, int]]:
+    ax_map: Dict[matplotlib.axes.Axes, Tuple[int, int]] = {}
+    if ax.ndim != 2:
+        raise ValueError(f"Expected ax to be 2D array, got shape={ax.shape}")
+    for r in range(ax.shape[0]):
+        for c in range(ax.shape[1]):
+            ax_map[ax[r, c]] = (r, c)
+    return ax_map
+
+
+@dataclass
+class HighlightControllerWithSummary:
+    fig: matplotlib.figure.Figure
+    ax: np.ndarray
+
+    offers: Sequence[Any]
+    current_costs: Sequence[Any]
+    future_costs: Sequence[Any]
+    energy_vals: Sequence[Any]
+    tmax: int
+
+    state_to_class: Mapping[State, int]
+    class_to_states: Sequence[Sequence[State]]
+
+    # highlight styling
+    edgecolor: str = "yellow"
+    linewidth: float = 2.0
+    alpha: float = 1.0
+
+    _cid: Optional[int] = None
+    _ax_map: Optional[Dict[matplotlib.axes.Axes, Tuple[int, int]]] = None
+    _patches: Optional[List[Rectangle]] = None
+    _last_class_id: Optional[int] = None
+
+    def connect(self) -> None:
+        self._ax_map = _axes_index_map(self.ax)
+        self._patches = []
+        self._cid = self.fig.canvas.mpl_connect("button_press_event", self._on_click)
+
+    def disconnect(self) -> None:
+        if self._cid is not None:
+            self.fig.canvas.mpl_disconnect(self._cid)
+        self._cid = None
+        self.clear()
+
+    def clear(self) -> None:
+        # remove highlight rectangles
+        if self._patches:
+            for p in self._patches:
+                try:
+                    p.remove()
+                except Exception:
+                    pass
+            self._patches = []
+        self._last_class_id = None
+        self.fig.canvas.draw_idle()
+
+    def _on_click(self, event: matplotlib.backend_bases.MouseEvent) -> None:
+        if event.inaxes is None or self._ax_map is None or self._patches is None:
+            return
+        if event.inaxes not in self._ax_map:
+            return
+        if getattr(event, "button", None) != 1:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+
+        ax_r, ax_c = self._ax_map[event.inaxes]
+
+        n_fc = len(self.future_costs)
+        cc_i, fc_i = divmod(ax_r, n_fc)
+        if not (0 <= cc_i < len(self.current_costs) and 0 <= fc_i < len(self.future_costs)):
+            return
+
+        o = self.offers[ax_c]
+        cc = self.current_costs[cc_i]
+        fc = self.future_costs[fc_i]
+
+        col = int(np.round(event.xdata))
+        row = int(np.round(event.ydata))
+
+        if not (0 <= col < self.tmax and 0 <= row < len(self.energy_vals)):
+            return
+
+        e = self.energy_vals[row]
+        t = col + 1  # 1-based
+
+        clicked_state: State = (e, o, cc, fc, t)
+        class_id = self.state_to_class.get(clicked_state, None)
+        if class_id is None:
+            return
+
+        self._highlight_class(class_id)
+
+    def _highlight_class(self, class_id: int) -> None:
+        # If you want "toggle off on re-click", uncomment:
+        # if self._last_class_id == class_id:
+        #     self.clear()
+        #     return
+
+        # Clear old highlights
+        if self._patches:
+            for p in self._patches:
+                try:
+                    p.remove()
+                except Exception:
+                    pass
+        self._patches = []
+
+        cls_states = self.class_to_states[class_id]
+
+        offer_to_col = {o: j for j, o in enumerate(self.offers)}
+        cc_to_i = {cc: i for i, cc in enumerate(self.current_costs)}
+        fc_to_i = {fc: i for i, fc in enumerate(self.future_costs)}
+        e_to_row = {e: i for i, e in enumerate(self.energy_vals)}
+
+        n_fc = len(self.future_costs)
+
+        for (e, o, cc, fc, t) in cls_states:
+            if o not in offer_to_col or cc not in cc_to_i or fc not in fc_to_i or e not in e_to_row:
+                continue
+            if not (1 <= int(t) <= self.tmax):
+                continue
+
+            ax_c = offer_to_col[o]
+            cc_i = cc_to_i[cc]
+            fc_i = fc_to_i[fc]
+            ax_r = cc_i * n_fc + fc_i
+
+            r = e_to_row[e]
+            c = int(t) - 1  # 0-based column
+
+            target_ax = self.ax[ax_r, ax_c]
+            rect = Rectangle(
+                (c - 0.5, r - 0.5),
+                1.0,
+                1.0,
+                fill=False,
+                edgecolor=self.edgecolor,
+                linewidth=self.linewidth,
+                alpha=self.alpha,
+                zorder=10,
+            )
+            target_ax.add_patch(rect)
+            self._patches.append(rect)
+
+
+def add_state_class_highlighting_with_summary(
+    fig: matplotlib.figure.Figure,
+    ax: np.ndarray,
+    *,
+    offers: Sequence[Any],
+    current_costs: Sequence[Any],
+    future_costs: Sequence[Any],
+    energy_vals: Sequence[Any],
+    tmax: int,
+    state_classes: Sequence[Sequence[State]],
+    # styling knobs
+    edgecolor: str = "yellow",
+    linewidth: float = 2.0,
+    alpha: float = 1.0,
+) -> HighlightControllerWithSummary:
+    st2c = _build_state_to_class_map(state_classes)
+
+    controller = HighlightControllerWithSummary(
+        fig=fig,
+        ax=ax,
+        offers=offers,
+        current_costs=current_costs,
+        future_costs=future_costs,
+        energy_vals=energy_vals,
+        tmax=int(tmax),
+        state_to_class=st2c,
+        class_to_states=state_classes,
+        edgecolor=edgecolor,
+        linewidth=linewidth,
+        alpha=alpha,
+    )
+    controller.connect()
+    return controller
+
+
+def beh_barplot(data, abstraction_levels, transitions_costs, mdl_prefix="resp-esp: "):
+    """
+    Docstring for beh_barplot
+    
+    :param data: Description
+    :param abstraction_levels: Description
+    :param transitions_costs: Description
+    :param mdl_prefix: Description
+    """
+    # Plot the results:
+    fig, ax = plt.subplots(2, 2, figsize=[20, 10])
+    cmap = matplotlib.colormaps.get_cmap('Set3')
+    ax = ax.flatten()
+    for i, trans in enumerate(data['transition'].unique()):
+        results = data[data['transition'] == trans].groupby(['vpn', 'reward'])[['response', *[f'{mdl_prefix}{eps}' for eps in abstraction_levels]]].mean().reset_index()
+        resp_cols = [c for c in results.columns if c.startswith(mdl_prefix) or c == 'response']
+        rewards = np.sort(results['reward'].unique())
+
+        n_rewards = len(rewards)
+        n_resp = len(resp_cols)
+
+        x = np.arange(n_rewards)  # base positions per reward/offer
+        bar_width = 0.8 / n_resp  # so each group takes ~0.8 width
+
+        # precompute stats
+        grouped = results.groupby('reward')[resp_cols]
+
+        means = grouped.mean()
+        stds = grouped.std()
+
+        for j, col in enumerate(resp_cols):
+            # horizontal offset for this response-type within each reward group
+            offset = (j - (n_resp - 1) / 2) * bar_width
+            
+            # bar positions
+            x_pos = x + offset
+            
+            # get mean and std aligned with rewards
+            m = means[col].reindex(rewards).values
+            s = stds[col].reindex(rewards).values
+
+            # bars: mean + std
+            if col == 'response':
+                color = 'k'
+            else:
+                color = cmap(j)
+            try:
+                ax[i].bar(
+                    x_pos,
+                    m,
+                    bar_width,
+                    yerr=s,
+                    capsize=3,
+                    alpha=0.7,
+                    label=col,
+                    color=color,
+                    edgecolor='k',
+                    linewidth=1
+                )
+            except:
+                print('A')
+
+            # overlay per-subject "cloud" for this response-type
+            for ii, r in enumerate(rewards):
+                vals = results.loc[results['reward'] == r, col].values
+                # jitter around the bar center
+                jitter = np.random.uniform(-bar_width / 4, bar_width / 4, size=len(vals))
+                ax[i].scatter(
+                    np.full_like(vals, x_pos[ii]) + jitter,
+                    vals,
+                    color=color,
+                    s=20,
+                    alpha=0.5,
+                    edgecolors='k',
+                    linewidths=0.0
+                )
+
+        # cosmetic stuff
+        ax[i].spines[['right', 'top']].set_visible(False)
+        ax[i].set_ylim([0, 1])
+        if i > 1:
+            ax[i].set_xticks(x)
+            ax[i].set_xticklabels(rewards)
+            ax[i].set_xlabel('Offer (reward)')
+        if i == 0 or i == 2:
+            ax[i].set_ylabel('Value')
+        ax[i].set_title(f'cc={transitions_costs[trans][0]}, fc={transitions_costs[trans][1]}')
+        if i == len(ax) -1:
+            ax[i].legend(title='Response type', bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    return fig, ax

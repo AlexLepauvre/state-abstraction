@@ -6,7 +6,11 @@ from tqdm import tqdm
 from ot import emd2
 from joblib import Parallel, delayed
 from sklearn.cluster import AgglomerativeClustering
+from scipy.special import expit
 from .utils import draw_sign_boundary, state_classes_from_lbl, avg_reduce_mdp
+from typing import Optional, Union
+from matplotlib.colors import Colormap
+
 
 DISTANCE_METRICS = ['bisimulation', 'q_distance']
 
@@ -123,6 +127,26 @@ class MDP:
             Policy
         """
         return np.array(Q[:, 1] - Q[:, 0] > 0).astype(int)
+    
+
+    def soft_policy(self, 
+                    Q: np.ndarray
+                    ):
+        """
+        Policy based on state action value function, action probability is expit(\Delta DV):
+
+        Parameters
+        ----------
+        Q : (S, A) np.ndarray
+            State action value function, returns the value of each action in each state 
+            (given the policy used to compute Q)
+
+        Returns
+        -------
+        π : (S,) np.ndarray
+            Policy
+        """
+        return np.array([1 - expit(Q[:, 1] - Q[:, 0]), expit(Q[:, 1] - Q[:, 0])]).T
 
     def evaluate_policy(self, 
                         policy: np.ndarray
@@ -192,6 +216,7 @@ class MDP:
             DV: np.ndarray,
             title: Optional[str]=None,
             tmax: Optional[float]=None,
+            cmap: Optional[Union[str, Colormap]] = 'coolwarm'
             ) -> tuple[matplotlib.figure.Figure, plt.Axes]:
         """
         Plot the decision values as a function of energy and 
@@ -318,8 +343,7 @@ class MDP:
 
     def bisim_metric(
             self,
-            cR: float = 0.1,
-            cT: float = 0.9,
+            gamma: float = 0.99,
             tol: float = 1e-6,
             max_iters: int = 200,
             njobs=-1
@@ -356,6 +380,7 @@ class MDP:
         ValueError
             _description_
         """
+        cR, cT = 1 - gamma, gamma
         if not 0 <= cR <= 1:
             raise ValueError("cR must be larger than 0 but smaller than 1!")
         if not 0 <= cT <= 1:
