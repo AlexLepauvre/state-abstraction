@@ -7,7 +7,7 @@ from ot import emd2
 from joblib import Parallel, delayed
 from sklearn.cluster import AgglomerativeClustering
 from scipy.special import expit
-from .utils import draw_sign_boundary, state_classes_from_lbl, avg_reduce_mdp
+from .utils import draw_sign_boundary, state_classes_from_lbl, avg_reduce_mdp, shiftedColorMap
 from typing import Optional, Union
 from matplotlib.colors import Colormap
 
@@ -105,7 +105,7 @@ class MDP:
                 for state in self.states:
                     if state[self.tdim] != t:
                         continue
-                    Q[self.s2i[state], a] = self.r[self.s2i[state], a] + self.gamma * np.dot(self.tp[self.s2i[state], a, :], V)
+                    Q[self.s2i[state], a] = self.r[self.s2i[state], a] + np.dot(self.tp[self.s2i[state], a, :], self.gamma * V)
                     V[self.s2i[state]] = np.max(Q[self.s2i[state], :])
         return V, Q
 
@@ -173,7 +173,7 @@ class MDP:
             idx_t = [i for i, s in enumerate(self.states) if s[self.tdim] == t]
             for i in idx_t:
                 for a in range(self.r.shape[1]):
-                    Q[i,a] = self.r[i,a] + self.tp[i,a,:] @ V
+                    Q[i,a] = self.r[i,a] + self.tp[i,a,:] @ (self.gamma * V)
                 # deterministic policy
                 if policy.ndim == 1:
                     V[i] = Q[i, policy[i]]
@@ -214,9 +214,11 @@ class MDP:
     def plot_dv(
             self, 
             DV: np.ndarray,
+            cmap_midpoint: Optional[float]=None,
             title: Optional[str]=None,
             tmax: Optional[float]=None,
-            cmap: Optional[Union[str, Colormap]] = 'coolwarm'
+            cmap: Optional[Union[str, Colormap]] = 'coolwarm',
+            boundary_threshold: Optional[Union[None, float]] = 0
             ) -> tuple[matplotlib.figure.Figure, plt.Axes]:
         """
         Plot the decision values as a function of energy and 
@@ -245,6 +247,9 @@ class MDP:
             tmax = self.T[-2]
         if title is not None:
             fig.suptitle(title, size=14)
+        if cmap_midpoint is not None:
+            cmap = shiftedColorMap(cmap, start=np.nanmin(DV), midpoint=cmap_midpoint, stop=np.nanmax(DV))
+            
         for o_i, o in enumerate(states_var[1]):
             ctr = 0
             for cc in states_var[2]:
@@ -253,13 +258,12 @@ class MDP:
                     for i, e in enumerate(states_var[self.edim]):
                         for ii, t in enumerate(range(tmax)):
                             mat[i, ii] = DV[self.s2i[(e, o, cc, fc, t+1)]] 
-                    
                     im = ax[ctr, o_i].imshow(mat, aspect='auto',
-                                            cmap='seismic', origin='lower', vmin=-(np.max(np.abs(DV))), 
-                                            vmax=np.max(np.abs(DV)))
+                                             cmap=cmap, origin='lower', vmin=np.nanmin(DV), vmax=np.nanmax(DV))
                     # Plot the contours:
                     # Draw contour line where Z == 0 (boundary between + and -)
-                    draw_sign_boundary(ax[ctr, o_i], mat, thresh=0)
+                    if boundary_threshold is not None:
+                       draw_sign_boundary(ax[ctr, o_i], mat, thresh=boundary_threshold)
                     if ctr == 0:
                         ax[ctr, o_i].set_title(f'Offer = {o}', size=12)
                     if o_i == 0:
