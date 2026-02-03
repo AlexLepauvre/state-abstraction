@@ -304,6 +304,7 @@ def plot_state_matrix(
         ax: Optional[plt.Axes] = None,
         feature_names: Optional[list] = None,
         cbar_label: Optional[str] = None,
+        title: Optional[str]=None
 
  ) -> Tuple[plt.Figure, plt.Axes]:
     """
@@ -406,6 +407,7 @@ def plot_state_matrix(
     # ==================== Plot heatmap ====================
     ax = fig.add_subplot(gs[0, depth])
     im = ax.imshow(matrix, cmap=cmap, interpolation='none')
+    ax.set_title(title)
     ax.set_xlim(-0.5, N-0.5)
     ax.set_ylim(N-0.5, -0.5)
     ax.set_xticks([]); ax.set_yticks([])
@@ -1144,47 +1146,54 @@ def beh_barplot(data, abstraction_levels, transitions_costs, mdl_prefix="resp-es
 # Posted by Paul H, modified by community. See post 'Timeline' for change history
 # Retrieved 2026-01-28, License - CC BY-SA 4.0
 
-def shiftedColorMap(cmap, start=0, midpoint=0.5, stop=1.0, name='shiftedcmap'):
-    '''
-    Function to offset the "center" of a colormap. Useful for
-    data with a negative min and positive max and you want the
-    middle of the colormap's dynamic range to be at zero.
+import numpy as np
+import matplotlib
+from matplotlib.colors import LinearSegmentedColormap
 
-    Input
-    -----
-      cmap : The matplotlib colormap to be altered
-      start : Offset from lowest point in the colormap's range.
-          Defaults to 0.0 (no lower offset). Should be between
-          0.0 and `midpoint`.
-      midpoint : The new center of the colormap. Defaults to 
-          0.5 (no shift). Should be between 0.0 and 1.0. In
-          general, this should be  1 - vmax / (vmax + abs(vmin))
-          For example if your data range from -15.0 to +5.0 and
-          you want the center of the colormap at 0.0, `midpoint`
-          should be set to  1 - 5/(5 + 15)) or 0.75
-      stop : Offset from highest point in the colormap's range.
-          Defaults to 1.0 (no upper offset). Should be between
-          `midpoint` and 1.0.
-    '''
-    cdict = {
-        'red': [],
-        'green': [],
-        'blue': [],
-        'alpha': []
-    }
+def _truncate_colormap(cmap, minval=0.0, maxval=1.0, n=256, name='trunc'):
+    new_colors = cmap(np.linspace(minval, maxval, n))
+    return LinearSegmentedColormap.from_list(name, new_colors)
 
-    # regular index to compute the colors
-    reg_index = np.linspace(start, stop, 257)
+def shiftedColorMap(cmap, vmin, vcenter=0.0, vmax=None, name='shiftedcmap'):
+    """
+    Return a colormap adjusted so that vcenter corresponds to the central color.
 
-    # shifted index to match the data
+    Behavior:
+      - If vmin < vcenter < vmax: shift so vcenter lands at the center color.
+      - If vmin >= vcenter (all data >= center): use upper half of cmap [0.5, 1].
+      - If vmax <= vcenter (all data <= center): use lower half of cmap [0, 0.5].
+    """
+    if vmax is None:
+        raise ValueError("Please pass vmax explicitly (no guessing).")
+
+    if not (vmin < vmax):
+        raise ValueError(f"Require vmin < vmax, got vmin={vmin}, vmax={vmax}")
+
+    # Case 1: data are entirely on/above the center -> upper half of diverging cmap
+    if vmin >= vcenter:
+        newcmap = _truncate_colormap(cmap, 0.5, 1.0, name=f"{name}_upper")
+        newcmap.set_bad("grey")
+        return newcmap
+
+    # Case 2: data are entirely on/below the center -> lower half of diverging cmap
+    if vmax <= vcenter:
+        newcmap = _truncate_colormap(cmap, 0.0, 0.5, name=f"{name}_lower")
+        newcmap.set_bad("grey")
+        return newcmap
+
+    # Case 3: data straddle the center -> true shifted midpoint
+    midpoint = (vcenter - vmin) / (vmax - vmin)  # in (0, 1)
+
+    cdict = {'red': [], 'green': [], 'blue': [], 'alpha': []}
+
+    reg_index = np.linspace(0.0, 1.0, 257)
     shift_index = np.hstack([
-        np.linspace(0.0, midpoint, 128, endpoint=False), 
-        np.linspace(midpoint, 1.0, 129, endpoint=True)
+        np.linspace(0.0, midpoint, 128, endpoint=False),
+        np.linspace(midpoint, 1.0, 129, endpoint=True),
     ])
 
     for ri, si in zip(reg_index, shift_index):
         r, g, b, a = cmap(ri)
-
         cdict['red'].append((si, r, r))
         cdict['green'].append((si, g, g))
         cdict['blue'].append((si, b, b))
@@ -1192,5 +1201,5 @@ def shiftedColorMap(cmap, start=0, midpoint=0.5, stop=1.0, name='shiftedcmap'):
 
     newcmap = matplotlib.colors.LinearSegmentedColormap(name, cdict)
     newcmap.set_bad("grey")
-
     return newcmap
+

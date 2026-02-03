@@ -101,8 +101,8 @@ class MDP:
 
         # Loop through time steps:
         for t in reversed(self.T):
-            for a in range(A):
-                for state in self.states:
+            for state in self.states:
+                for a in range(A):
                     if state[self.tdim] != t:
                         continue
                     Q[self.s2i[state], a] = self.r[self.s2i[state], a] + np.dot(self.tp[self.s2i[state], a, :], self.gamma * V)
@@ -217,7 +217,9 @@ class MDP:
             cmap_midpoint: Optional[float]=None,
             title: Optional[str]=None,
             tmax: Optional[float]=None,
-            cmap: Optional[Union[str, Colormap]] = 'coolwarm',
+            cmap: Optional[Union[None, str, Colormap]] = None,
+            vmin: Optional[Union[None, float]] = None,
+            vmax: Optional[Union[None, float]] = None,
             boundary_threshold: Optional[Union[None, float]] = 0
             ) -> tuple[matplotlib.figure.Figure, plt.Axes]:
         """
@@ -243,12 +245,18 @@ class MDP:
         fig, ax = plt.subplots(len(states_var[2]) ** 2, 
                                len(states_var[1]), 
                                figsize=[12, 8])
+        if cmap is None:
+            cmap = plt.get_cmap('coolwarm')
         if tmax is None:
             tmax = self.T[-2]
         if title is not None:
             fig.suptitle(title, size=14)
+        if vmin is None:
+            vmin = np.nanmin(DV)
+        if vmax is None:
+           vmax = np.nanmax(DV)
         if cmap_midpoint is not None:
-            cmap = shiftedColorMap(cmap, start=np.nanmin(DV), midpoint=cmap_midpoint, stop=np.nanmax(DV))
+            cmap = shiftedColorMap(cmap, vmin, vcenter=cmap_midpoint, vmax=vmax)
             
         for o_i, o in enumerate(states_var[1]):
             ctr = 0
@@ -259,7 +267,7 @@ class MDP:
                         for ii, t in enumerate(range(tmax)):
                             mat[i, ii] = DV[self.s2i[(e, o, cc, fc, t+1)]] 
                     im = ax[ctr, o_i].imshow(mat, aspect='auto',
-                                             cmap=cmap, origin='lower', vmin=np.nanmin(DV), vmax=np.nanmax(DV))
+                                             cmap=cmap, origin='lower', vmin=vmin, vmax=vmax)
                     # Plot the contours:
                     # Draw contour line where Z == 0 (boundary between + and -)
                     if boundary_threshold is not None:
@@ -499,6 +507,45 @@ class MDP:
             val = np.max(np.abs(q[s1, :] - q[s2, :]))
             d[s1, s2] = val
             d[s2, s1] = val
+        return d/np.max(d)
+    
+    def inverse_qdist(
+            self, 
+            q: Optional[np.ndarray]=None
+            ) -> np.ndarray:
+        """
+        Computes Q distance between states pair based on the approximate Q function abstraction described in https://arxiv.org/pdf/1701.04113, 
+        Q distance is defined as:
+        $$d(s_1, s_2) = max|Q_{s1, a} - Q_{s2, a}| \forall a $$
+        This metric guarantees that the value function accuracy of the abstract MDP is bounded by:
+        (2/epsilon)/(1-lambda)^2
+
+        Parameters
+        ----------
+        q : (S, A) np.ndarray
+            State action value function of an MDP, i.e. value of each action in each state. If none, computed using backward induction
+
+        Returns
+        -------
+        (S, S) np.ndarray
+            Pairwise Q distances
+        """
+        if q is None:
+            _, q = self.backward_induction()
+        # Extract size:
+        S, _ = self.r.shape
+        # Prepare distance matrix:
+        d = np.zeros((S, S))
+        # Compute the inverse of delta Q:
+        inv_deltQ = 1/(q[:, 1] - q[:, 0])
+        inv_deltQ[inv_deltQ == np.inf] = np.std(inv_deltQ[inv_deltQ != np.inf]) * 3
+        # Create state pairs:
+        pairs = [(i, j) for i in range(S) for j in range(i+1, S)]
+        for s1, s2 in pairs:
+            val = np.max(np.abs(inv_deltQ[s1] - inv_deltQ[s2]))
+            d[s1, s2] = val
+            d[s2, s1] = val
+        
         return d/np.max(d)
     
 
