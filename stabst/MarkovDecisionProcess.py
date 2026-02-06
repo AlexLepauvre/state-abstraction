@@ -509,6 +509,135 @@ class MDP:
             d[s2, s1] = val
         return d/np.max(d)
     
+
+    def optimal_q_dist(self, 
+                      q: Optional[np.ndarray]=None
+                    ):
+        """
+        Computes Q distance between states pair based on the approximate Q function abstraction described in https://arxiv.org/pdf/1701.04113, 
+        Q distance is defined as:
+        $$d(s_1, s_2) = max|Q_{s1, a} - Q_{s2, a}| \forall a $$
+        This metric guarantees that the value function accuracy of the abstract MDP is bounded by:
+        (2/epsilon)/(1-lambda)^2
+
+        Parameters
+        ----------
+        q : (S, A) np.ndarray
+            State action value function of an MDP, i.e. value of each action in each state. If none, computed using backward induction
+
+        Returns
+        -------
+        (S, S) np.ndarray
+            Pairwise Q distances
+        """
+        if q is None:
+            _, q = self.backward_induction()
+
+        # Extract size:
+        S, _ = self.r.shape        
+        # Prepare distance matrix:
+        d = np.zeros((S, S))
+        # Create state pairs:
+        pairs = [(i, j) for i in range(S) for j in range(i+1, S)]
+        for s1, s2 in pairs:
+            val = np.max(np.abs(q[s1] - q[s2]))
+            d[s1, s2] = val
+            d[s2, s1] = val
+        return d/np.max(d)
+    
+    def model_similarity_distance(self, 
+                      r: Optional[np.ndarray]=None,
+                      tp: Optional[np.ndarray]=None
+                    ):
+        """
+        Computes model similarity distance between states pair based on the Phi_model function abstraction described in https://arxiv.org/pdf/1701.04113, 
+        defined as:
+        $$
+        max(|r[s1, a] - r[s2, a]|, sum(tp[s1, a, :] - tp[s2, a, :]))
+        $$
+
+        Parameters
+        ----------
+        r : (S, A) np.ndarray
+            Reward function, mapping reward to each state for each action
+        tp : (S, A, S) np.ndarray
+            transition probabilities mapping the next possible states to each state for each action
+
+        Returns
+        -------
+        (S, S) np.ndarray
+            Pairwise Q distances
+        """
+        if q is None:
+            _, q = self.backward_induction()
+
+        # Extract size:
+        S, A = self.r.shape        
+        # Prepare distance matrix:
+        d = np.zeros((S, S))
+        # Create state pairs:
+        pairs = [(i, j) for i in range(S) for j in range(i+1, S)]
+        for s1, s2 in pairs:
+            best = 0
+            # Loop over actions:
+            for a in range(A):
+                # Compute distance
+                val = np.max([np.abs(r[s1, a] - r[s2, a]), 
+                              np.sum([tp[s1, a, :] - tp[s2, a, :]])])
+                if val > best:
+                    best = val
+            d[s1, s2] = best
+            d[s2, s1] = best
+        return d/np.max(d)
+    
+
+    def boltzman_q_distance(self, 
+                      q: Optional[np.ndarray]=None
+                    ):
+        """
+        Computes model similarity distance between states pair based on the Phi_model function abstraction described in https://arxiv.org/pdf/1701.04113, 
+        defined as:
+        $$
+        max(|exp(q[s1, a]) / sum(exp(q[s1, :])) - exp(q[s2, a]) / sum(exp(q[s2, :]))|)
+        $$
+
+        Parameters
+        ----------
+        r : (S, A) np.ndarray
+            Reward function, mapping reward to each state for each action
+        tp : (S, A, S) np.ndarray
+            transition probabilities mapping the next possible states to each state for each action
+
+        Returns
+        -------
+        (S, S) np.ndarray
+            Pairwise Q distances
+        """
+        if q is None:
+            _, q = self.backward_induction()
+
+        # Extract size:
+        S, A = self.r.shape        
+        # Prepare distance matrix:
+        d = np.zeros((S, S))
+        # Create state pairs:
+        pairs = [(i, j) for i in range(S) for j in range(i+1, S)]
+        for s1, s2 in pairs:
+            s1_norm = np.sum(np.exp(q[s1, :]))
+            s2_norm = np.sum(np.exp(q[s2, :]))
+            best = 0
+            # Loop over actions:
+            for a in range(A):
+                # Compute distance
+                val = np.abs((np.exp(q[s1, a]) / s1_norm) - (np.exp(q[s2, a]) / s2_norm))
+
+                if val > best:
+                    best = val
+            d[s1, s2] = best
+            d[s2, s1] = best
+        return d/np.max(d)
+    
+
     def inverse_qdist(
             self, 
             q: Optional[np.ndarray]=None
@@ -574,5 +703,5 @@ class MDP:
         # Reduce the MDP accordingly:
         statesR, tpR, rR, class_of_state = avg_reduce_mdp(state_classes, self.tp, self.r, self.s2i)
         # Return MDP object:
-        return MDP(statesR, tpR, rR, self.gamma), state_classes, class_of_state
+        return MDP(statesR, tpR, rR, self.gamma, tdim=self.tdim, edim=self.edim), state_classes, class_of_state
     
