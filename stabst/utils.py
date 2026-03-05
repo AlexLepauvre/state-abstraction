@@ -83,8 +83,11 @@ def avg_reduce_mdp(
             # pool S → K
             tpR[k, a, :] = avg_row @ M              # (K,)
     
-    # Pick the first class of each class as a representative:
-    statesR = [states[0] for states in classes]
+    # Pick the latest state of each class as a representative:
+    statesR = []
+    for states in classes:
+        ts = [state[-1] for state in states]
+        statesR.append(states[np.where(ts == np.max(ts))[0][0]])
 
     # Instantiate the new reduced MDP object:
     return statesR, tpR, rR, class_of_state

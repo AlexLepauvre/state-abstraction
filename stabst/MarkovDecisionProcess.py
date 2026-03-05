@@ -108,6 +108,48 @@ class MDP:
                     Q[self.s2i[state], a] = self.r[self.s2i[state], a] + np.dot(self.tp[self.s2i[state], a, :], self.gamma * V)
                     V[self.s2i[state]] = np.max(Q[self.s2i[state], :])
         return V, Q
+    
+    def value_iteration(
+            self,
+            tol: float = 1e-6,
+            max_iters: int = int(1e5),
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Value iteration algorithm, iteratively calculate value and action funcitons. Loosely inspired from
+        https://github.com/markkho/msdm/blob/master/msdm/algorithms/valueiteration.py#L140C1-L140C3
+
+        Parameters
+        ----------
+        tol : float, optional
+            Precision of the value estimation
+        max_iters : int, optional
+            Max number of iterations
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+        V : (S,) np.ndarray
+            State values for all state.
+        Q : (S, A) np.ndarray
+            State-action values.
+        """
+        # Extract dimensions:
+        S = len(self.states)
+        A = self.r.shape[1]
+        # Initialize V and Q:
+        V = np.zeros(S)
+        Q = np.zeros((S, A))
+
+        # Loop through time steps:
+        for _ in tqdm(range(max_iters)):
+            v = V.copy()
+            for state in self.states:
+                for a in range(A):
+                    Q[self.s2i[state], a] = self.r[self.s2i[state], a] + np.dot(self.tp[self.s2i[state], a, :], self.gamma * V)
+                V[self.s2i[state]] = np.max(Q[self.s2i[state], :])
+            if np.isclose(v, V, atol=tol, rtol=0).all():
+                break
+        return V, Q
 
     def greedy_policy(self, 
                       Q: np.ndarray
@@ -288,6 +330,33 @@ class MDP:
         cbar.ax.set_ylabel('Decision value', size=16)
         return fig, ax
     
+    def build_sr(
+            self,
+            pi: np.array
+    ) -> tuple[np.array, np.array]:
+        """
+        Builds the successor representation of the MDP based on the known transition probabilities and the 
+        specified policy
+
+        Parameters
+        ----------
+        pi : np.array (N, A)
+            Probability of each action in each state            
+
+        Returns
+        -------
+        tuple[np.array, np.array]
+            t_pi : np.array (N, N)
+            Transition probability from a given state to any other state under the policy
+            sr: np.array (N, N)
+            Successor representation where rows represent current states and column future states
+            occupancy
+        """
+        # Calculate the transition probability elicited by this specific policy
+        t_pi = np.einsum("iaj,ia->ij", self.tp, pi)
+        # Compute the successor representation matrix:
+        sr = np.linalg.inv(np.eye(t_pi.shape[0]) - self.gamma*t_pi)
+        return t_pi, sr
 
     def state_pairs_dist(
             self,
@@ -540,7 +609,7 @@ class MDP:
         # Create state pairs:
         pairs = [(i, j) for i in range(S) for j in range(i+1, S)]
         for s1, s2 in pairs:
-            val = np.max(np.abs(q[s1] - q[s2]))
+            val = np.max(np.abs(q[s1, :] - q[s2, :]))
             d[s1, s2] = val
             d[s2, s1] = val
         return d/np.max(d)
@@ -568,9 +637,6 @@ class MDP:
         (S, S) np.ndarray
             Pairwise Q distances
         """
-        if q is None:
-            _, q = self.backward_induction()
-
         # Extract size:
         S, A = self.r.shape        
         # Prepare distance matrix:
@@ -583,7 +649,7 @@ class MDP:
             for a in range(A):
                 # Compute distance
                 val = np.max([np.abs(r[s1, a] - r[s2, a]), 
-                              np.sum([tp[s1, a, :] - tp[s2, a, :]])])
+                              np.abs(np.sum([tp[s1, a, :] - tp[s2, a, :]]))])
                 if val > best:
                     best = val
             d[s1, s2] = best
@@ -635,6 +701,48 @@ class MDP:
                     best = val
             d[s1, s2] = best
             d[s2, s1] = best
+        return d
+    
+
+    def entropy_weighting(self, 
+                      q: Optional[np.ndarray]=None
+                    ):
+        """
+        Computes model similarity distance between states pair based on the Phi_model function abstraction described in https://arxiv.org/pdf/1701.04113, 
+        defined as:
+        $$
+        max(|exp(q[s1, a]) / sum(exp(q[s1, :])) - exp(q[s2, a]) / sum(exp(q[s2, :]))|)
+        $$
+
+        Parameters
+        ----------
+        r : (S, A) np.ndarray
+            Reward function, mapping reward to each state for each action
+        tp : (S, A, S) np.ndarray
+            transition probabilities mapping the next possible states to each state for each action
+
+        Returns
+        -------
+        (S, S) np.ndarray
+            Pairwise Q distances
+        """
+        if q is None:
+            _, q = self.backward_induction()
+
+        # Extract size:
+        S, A = self.r.shape        
+        # Prepare distance matrix:
+        d = np.zeros((S, S))
+        # Create state pairs:
+        pairs = [(i, j) for i in range(S) for j in range(i+1, S)]
+        for s1, s2 in pairs:
+            p_s1 = np.exp(q[s1, 1])/np.sum(np.exp(q[s1, :]))
+            p_s2 = np.exp(q[s2, 1])/np.sum(np.exp(q[s2, :]))
+            h_s1 = -p_s1 * np.log(p_s1) - (1-p_s1) * np.log(1-p_s1)
+            h_s2 = -p_s2 * np.log(p_s2) - (1-p_s2) * np.log(1-p_s2)
+            d_val = np.abs(p_s1 - p_s2) + np.mean([h_s1, h_s2])
+            d[s1, s2] = d_val
+            d[s2, s1] = d_val
         return d/np.max(d)
     
 
@@ -677,6 +785,7 @@ class MDP:
         
         return d/np.max(d)
     
+
 
     def distance_reduce_mdp(
             self,
