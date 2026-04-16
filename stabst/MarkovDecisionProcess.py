@@ -64,6 +64,37 @@ class MDP:
         # Create time axis:
         self.T = sorted(list(set([state[self.tdim] for state in self.states])))
 
+    def term_to_abs(self):
+        """
+        Converts terminal states to absorbing ones. Modifies the transition probability matrix in place
+        """
+        S = len(self.states)
+        A = self.r.shape[1]
+        n = 0  # Keep track of the number of terminal states detected
+        for s in range(S):
+            for a in range(A):
+                if np.sum(self.tp[s, a, :]) == 0:
+                    # Make state transition to itself, i.e. absorbing
+                    self.tp[s, a, s] = 1
+                    n += 1
+        if n == 0:
+            print('No terminal states detected! If you wish to convert terminal states to absorbing ones, use abs_to_term instead!')
+
+    def abs_to_term(self):
+        """
+        Converts absorbing states to terminal ones. Modifies the transition probability matrix in place
+        """
+        S = len(self.states)
+        A = self.r.shape[1]
+        n = 0  # Keep track of the number of terminal states detected
+        for s in range(S):
+            for a in range(A):
+                if self.tp[s, a, s] == 1:
+                    # Make state transition to itself, i.e. absorbing
+                    self.tp[s, a, s] = 0
+                    n += 1
+        if n == 0:
+            print('No absorbing states detected! If you wish to convert terminal states to absorbing ones, use term_to_abs instead!')
     
     def backward_induction(self):
         """
@@ -340,7 +371,7 @@ class MDP:
 
         Parameters
         ----------
-        pi : np.array (N, A)
+        pi : np.array (S, A)
             Probability of each action in each state            
 
         Returns
@@ -352,8 +383,17 @@ class MDP:
             Successor representation where rows represent current states and column future states
             occupancy
         """
+        # Extract dimensions:
+        S = len(self.states)
+        A = self.r.shape[1]
         # Calculate the transition probability elicited by this specific policy
-        t_pi = np.einsum("iaj,ia->ij", self.tp, pi)
+        t_pi = np.zeros([S, S])
+        for s1 in range(S):
+            for s2 in range(S):
+                val = 0
+                for a in range(A):
+                    val += pi[s1, a] * self.tp[s1, a, s2]
+                t_pi[s1, s2] = val
         # Compute the successor representation matrix:
         sr = np.linalg.inv(np.eye(t_pi.shape[0]) - self.gamma*t_pi)
         return t_pi, sr

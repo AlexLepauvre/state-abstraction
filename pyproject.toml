@@ -20,10 +20,10 @@ license-files = ["LICEN[CS]E*"]
 dependencies = [
   "numpy",
   "pandas",
-  "networkx",
   "matplotlib",
   "scipy",
   "tqdm",
+  "sklearn",
   "pot",
   "joblib",
   "ipykernel",
@@ -32,6 +32,6 @@ dependencies = [
 
 
 [project.urls]
-Homepage = "https://github.com/pypa/sampleproject"
-Issues = "https://github.com/pypa/sampleproject/issues"
+Homepage = "https://github.com/AlexLepauvre/state-abstraction"
+Issues = "https://github.com/AlexLepauvre/state-abstraction/issues"
 

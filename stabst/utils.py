@@ -1145,6 +1145,60 @@ def beh_barplot(data, abstraction_levels, transitions_costs, mdl_prefix="resp-es
     return fig, ax
 
 
+def plt_default():
+    # https://www.nature.com/documents/Final_guide_to_authors.pdf
+    # Reset values to default:
+    plt.rcdefaults()
+    # Fonts
+    cm = 1/2.54  # centimeters in inches
+    plt.rcParams["font.family"] = "Liberation Sans"
+    plt.rcParams["font.size"] = 5
+    plt.rcParams["pdf.fonttype"] = 42
+
+    # Figure
+    plt.rcParams["figure.dpi"] = 300
+    plt.rcParams["figure.figsize"] = (8*cm, 6*cm)
+    plt.rcParams["figure.frameon"] = False
+    plt.rcParams["figure.constrained_layout.use"] = True
+    plt.rcParams["figure.constrained_layout.h_pad"] = 0
+    plt.rcParams["figure.constrained_layout.w_pad"] = 0
+
+    plt.rcParams["axes.titlesize"] = 6
+    plt.rcParams["axes.titlepad"] = 5
+    plt.rcParams["axes.labelsize"] = 5
+    plt.rcParams["axes.labelpad"] = 1
+    plt.rcParams["axes.xmargin"] = 0.05
+    plt.rcParams["axes.ymargin"] = 0.05
+    plt.rcParams["axes.facecolor"] = "none"
+
+    plt.rcParams["legend.fontsize"] = 5
+    plt.rcParams["xtick.labelsize"] = 5
+    plt.rcParams["ytick.labelsize"] = 5
+    plt.rcParams["xtick.major.size"] = 1
+    plt.rcParams["ytick.major.size"] = 1
+    plt.rcParams["xtick.major.pad"] = 1
+    plt.rcParams["ytick.major.pad"] = 1
+    plt.rcParams["xtick.minor.pad"] = 1
+    plt.rcParams["ytick.minor.pad"] = 1
+
+    # Remove upper and right spines
+    plt.rcParams["axes.spines.top"] = False
+    plt.rcParams["axes.spines.right"] = False
+
+    # Set default axvline linewidth to 1 pt
+    plt.rcParams["lines.linewidth"] = 1
+
+    # Legend
+    plt.rcParams["legend.frameon"] = False
+    plt.rcParams["legend.borderpad"] = 0
+
+    # savefig
+    plt.rcParams["savefig.dpi"] = 300
+    plt.rcParams["savefig.transparent"] = True
+    plt.rcParams["savefig.bbox"] = None
+    plt.rcParams["savefig.pad_inches"] = 0
+
+
 # Source - https://stackoverflow.com/a
 # Posted by Paul H, modified by community. See post 'Timeline' for change history
 # Retrieved 2026-01-28, License - CC BY-SA 4.0
