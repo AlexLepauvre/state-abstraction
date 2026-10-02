@@ -1,12 +1,13 @@
 #  Task-structured preferences guide forward planning in sequential decision-making paper repository
 
-[![DOI](https://img.shields.io/badge/DOI-10.xxxx%2Fxxxxx-blue)](https://doi.org/10.xxxx/xxxxx)
+[![DOI](https://img.shields.io/badge/DOI-10.xxxx%2Fxxxxx-blue)](https://doi.org/10.64898/2026.09.25.754065)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://opensource.org/license/mit)
 
 
 **Authors:** Alex Lepauvre¹
 
 ¹ Department of Psychology, Technische Universität Dresden, Dresden, Germany
+
 ---
 
 ## About
