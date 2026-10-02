@@ -1,6 +1,6 @@
 #  Task-structured preferences guide forward planning in sequential decision-making paper repository
 
-[![DOI](https://img.shields.io/badge/DOI-10.xxxx%2Fxxxxx-blue)](https://doi.org/10.64898/2026.09.25.754065)
+[![DOI](https://img.shields.io/badge/DOI-10.64898/2026.09.25.754065-blue)](https://doi.org/10.64898/2026.09.25.754065)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://opensource.org/license/mit)
 
 
