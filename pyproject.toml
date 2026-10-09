@@ -23,7 +23,7 @@ dependencies = [
   "matplotlib",
   "scipy",
   "tqdm",
-  "sklearn",
+  "scikit-learn",
   "pot",
   "joblib",
   "ipykernel",
