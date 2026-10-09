@@ -27,6 +27,7 @@ dependencies = [
   "joblib",
   "ipykernel",
   "ipywidgets",
+  "scikit-learn"
 ]
 
 
